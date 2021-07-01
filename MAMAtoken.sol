@@ -1,13 +1,13 @@
 /**
- *Submitted for verification at BscScan.com on 2021-04-30
-*/
-
-/**
  * #MAMATOKEN
 
-   Great features:
-   2% fee auto add to the liquidity pool to locked forever when selling
-   1% fee convert to BNB and auto moved to donation wallet
+   - 4% of every transaction is redistributed to all holders
+   - 2% of every transaction automatically add to the liquidity pool to locked forever when selling
+   - 2% of every transaction is burned
+   - 4% of every transaction is converted to BNB and sent to the charity wallet
+   - 1% of every transaction is converted to BNB and sent to the dev wallet address
+   - 1% maximum for sell from total supply
+   - blacklist wallet. dev can blacklist and unblacklist wallet address.
 
    1,000,000,000,000 total supply
    10,000,000,000 tokens limitation for sell, which is 1% of the total supply.
@@ -788,36 +788,51 @@ contract MAMATOKEN is Context, IERC20, Ownable {
     mapping (address => uint256) private _tOwned;
     mapping (address => mapping (address => uint256)) private _allowances;
 
+    mapping (address => bool) private _isBlacklisted;
     mapping (address => bool) private _isExcludedFromFee;
-
     mapping (address => bool) private _isExcluded;
     address[] private _excluded;
 
-    address private _donationWalletAddress = 0xA7482C9c5926E88d85804A969c383730Ce100639;
+    address private _charityWalletAddress = 0xA7482C9c5926E88d85804A969c383730Ce100639;
+    address private _devWalletAddress = 0xA7482C9c5926E88d85804A969c383730Ce100639;
 
     uint256 private constant MAX = ~uint256(0);
     uint256 private _tTotal = 1 * 10**12 * 10**9;
     uint256 private _rTotal = (MAX - (MAX % _tTotal));
     uint256 private _tFeeTotal;
 
-    string private _name = "MAMATOKEN";
+    string private _name = "Mamatoken";
     string private _symbol = "MAMA";
     uint8 private _decimals = 9;
 
-    uint256 public _donationFee = 2;
-    uint256 private _previousDonationFee = _donationFee;
+    uint256 public _taxFee = 4;
+    uint256 private _previousTaxFee = _taxFee;
 
-    uint256 public _liquidityFee = 1;
+    uint256 public _charityFee = 4;
+    uint256 private _previousCharityFee = _charityFee;
+    
+    uint256 public _devFee = 1;
+    uint256 private _previousDevFee = _devFee;
+
+    uint256 public _liquidityFee = 2;
     uint256 private _previousLiquidityFee = _liquidityFee;
+    
+    uint256 public _burnFee = 2;
 
     IUniswapV2Router02 public immutable uniswapV2Router;
     address public immutable uniswapV2Pair;
 
     bool inSwapAndLiquify;
     bool public swapAndLiquifyEnabled = true;
+    
+    uint256 public _maxTxPercent = 1;
+    uint256 public _maxWalletPercent = 5;
+    uint256 public _maxWalletDecimal = 1;
 
-    uint256 public _maxTxAmount = _tTotal * 1 / 10**2;
-    uint256 private numTokensSellToAddToLiquidity = _tTotal * 1 / 10**2;
+    uint256 public _maxTxAmount = _tTotal * _maxTxPercent / 10**2;
+    uint256 private numTokensSellToAddToLiquidity = _tTotal * _maxTxPercent / 10**2;
+    
+    uint256 public _maxWalletAmount = _tTotal * _maxWalletPercent / 10**(2 + _maxWalletDecimal);
 
     event MinTokensBeforeSwapUpdated(uint256 minTokensBeforeSwap);
     event SwapAndLiquifyEnabledUpdated(bool enabled);
@@ -832,6 +847,15 @@ contract MAMATOKEN is Context, IERC20, Ownable {
         _;
         inSwapAndLiquify = false;
     }
+    
+    struct Fees {
+        uint256 tTransferAmount;
+        uint256 tFee;
+        uint256 tDev;
+        uint256 tLiquidity;
+        uint256 tCharity;
+        uint256 tBurn;
+    }
 
     constructor () {
          _rOwned[_msgSender()] = _rTotal;
@@ -839,10 +863,10 @@ contract MAMATOKEN is Context, IERC20, Ownable {
         // PancakeSwap Router address:
         // (BSC testnet) 0xD99D1c33F9fC3444f8101754aBC46c52416550D1
         // (BSC mainnet) V2 0x10ED43C718714eb63d5aA57B78B54704E256024E
-        IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x10ED43C718714eb63d5aA57B78B54704E256024E);
+        // (Uniswap) V2 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
+        IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D);
          // Create a uniswap pair for this new token
-        uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory())
-            .createPair(address(this), _uniswapV2Router.WETH());
+        uniswapV2Pair = IUniswapV2Factory(_uniswapV2Router.factory()).createPair(address(this), _uniswapV2Router.WETH());
 
         // set the rest of the contract variables
         uniswapV2Router = _uniswapV2Router;
@@ -916,7 +940,7 @@ contract MAMATOKEN is Context, IERC20, Ownable {
     function deliver(uint256 tAmount) public {
         address sender = _msgSender();
         require(!_isExcluded[sender], "Excluded addresses cannot call this function");
-        (uint256 rAmount,,,,) = _getValues(tAmount);
+        (uint256 rAmount,,,,,,,,) = _getValues(tAmount);
         _rOwned[sender] = _rOwned[sender].sub(rAmount);
         _rTotal = _rTotal.sub(rAmount);
         _tFeeTotal = _tFeeTotal.add(tAmount);
@@ -925,10 +949,10 @@ contract MAMATOKEN is Context, IERC20, Ownable {
     function reflectionFromToken(uint256 tAmount, bool deductTransferFee) public view returns(uint256) {
         require(tAmount <= _tTotal, "Amount must be less than supply");
         if (!deductTransferFee) {
-            (uint256 rAmount,,,,) = _getValues(tAmount);
+            (uint256 rAmount,,,,,,,,) = _getValues(tAmount);
             return rAmount;
         } else {
-            (,uint256 rTransferAmount,,,) = _getValues(tAmount);
+            (,uint256 rTransferAmount,,,,,,,) = _getValues(tAmount);
             return rTransferAmount;
         }
     }
@@ -939,8 +963,7 @@ contract MAMATOKEN is Context, IERC20, Ownable {
         return rAmount.div(currentRate);
     }
 
-    function excludeFromReward(address account) public onlyOwner() {
-        // require(account != 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D, 'We can not exclude Uniswap router.');
+    function excludeFromReward(address account) public onlyOwner {
         require(!_isExcluded[account], "Account is already excluded");
         if(_rOwned[account] > 0) {
             _tOwned[account] = tokenFromReflection(_rOwned[account]);
@@ -949,7 +972,7 @@ contract MAMATOKEN is Context, IERC20, Ownable {
         _excluded.push(account);
     }
 
-    function includeInReward(address account) external onlyOwner() {
+    function includeInReward(address account) external onlyOwner {
         require(_isExcluded[account], "Account is already included");
         for (uint256 i = 0; i < _excluded.length; i++) {
             if (_excluded[i] == account) {
@@ -961,18 +984,19 @@ contract MAMATOKEN is Context, IERC20, Ownable {
             }
         }
     }
-        function _transferBothExcluded(address sender, address recipient, uint256 tAmount) private {
-        (uint256 rAmount, uint256 rTransferAmount, uint256 tTransferAmount, uint256 tLiquidity, uint256 tDonation) = _getValues(tAmount);
+    
+    function _transferBothExcluded(address sender, address recipient, uint256 tAmount) private {
+        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 tDev, uint256 tLiquidity, uint256 tCharity, uint256 tBurn) = _getValues(tAmount);
         _tOwned[sender] = _tOwned[sender].sub(tAmount);
         _rOwned[sender] = _rOwned[sender].sub(rAmount);
         _tOwned[recipient] = _tOwned[recipient].add(tTransferAmount);
         _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);
-        _takeLiquidity(tLiquidity);
-        _takeDonation(tDonation);
+        _takeLiquidity(tLiquidity + tDev + tCharity);
+        _reflectFee(rFee, tFee, tBurn);
         emit Transfer(sender, recipient, tTransferAmount);
     }
 
-        function excludeFromFee(address account) public onlyOwner {
+    function excludeFromFee(address account) public onlyOwner {
         _isExcludedFromFee[account] = true;
     }
 
@@ -980,22 +1004,36 @@ contract MAMATOKEN is Context, IERC20, Ownable {
         _isExcludedFromFee[account] = false;
     }
 
-    function setDonationFeePercent(uint256 donationFee) external onlyOwner() {
-        _donationFee = donationFee;
+    function setTaxFeePercent(uint256 taxFee) external onlyOwner {
+        _taxFee = taxFee;
     }
 
-    function setLiquidityFeePercent(uint256 liquidityFee) external onlyOwner() {
-        _liquidityFee = liquidityFee;
+    function setCharityFeePercent(uint256 charityFee) external onlyOwner {
+        _charityFee = charityFee;
     }
     
-    function setDonationWalletAddress(address donationWallet) external onlyOwner() {
-        _donationWalletAddress = donationWallet;
+    function setDevFeePercent(uint256 devFee) external onlyOwner {
+        _devFee = devFee;
     }
 
-    function setMaxTxPercent(uint256 maxTxPercent) external onlyOwner() {
-        _maxTxAmount = _tTotal.mul(maxTxPercent).div(
-            10**2
-        );
+    function setLiquidityFeePercent(uint256 liquidityFee) external onlyOwner {
+        _liquidityFee = liquidityFee;
+    }
+
+    function setMaxTxPercent(uint256 maxTxPercent) external onlyOwner {
+        _maxTxPercent = maxTxPercent;
+        _maxTxAmount = _tTotal.mul(_maxTxPercent).div(10**2);
+    }
+    
+    function setMaxWalletPercent(uint256 maxWalletPercent, uint256 maxWalletDecimal) external onlyOwner {
+        _maxWalletPercent = maxWalletPercent;
+        _maxWalletDecimal = maxWalletDecimal;
+        
+        _maxWalletAmount = _tTotal.mul(_maxWalletPercent).div(10**(2 + _maxWalletDecimal));
+    }
+    
+    function setBurnPercent(uint256 burnPercent) external onlyOwner {
+        _burnFee = _tTotal.mul(burnPercent).div(10**2);
     }
 
     function setSwapAndLiquifyEnabled(bool _enabled) public onlyOwner {
@@ -1003,28 +1041,45 @@ contract MAMATOKEN is Context, IERC20, Ownable {
         emit SwapAndLiquifyEnabledUpdated(_enabled);
     }
 
-     //to recieve ETH from uniswapV2Router when swaping
+    // to recieve ETH from uniswapV2Router when swaping
     receive() external payable {}
 
-    function _getValues(uint256 tAmount) private view returns (uint256, uint256, uint256, uint256, uint256) {
-        (uint256 tTransferAmount, uint256 tLiquidity, uint256 tDonation) = _getTValues(tAmount);
-        (uint256 rAmount, uint256 rTransferAmount) = _getRValues(tAmount, tLiquidity, tDonation, _getRate());
-        return (rAmount, rTransferAmount, tTransferAmount, tLiquidity, tDonation);
+    function _reflectFee(uint256 rFee, uint256 tFee, uint256 tBurn) private {
+        _rTotal = _rTotal.sub(rFee);
+        _tFeeTotal = _tFeeTotal.add(tFee);
+        
+        _tTotal = _tTotal - tBurn;
+        
+        _maxTxAmount = _tTotal.mul(_maxTxPercent).div(10**2);
+        _maxWalletAmount = _tTotal.mul(_maxWalletPercent).div(10**(2 + _maxWalletDecimal));
     }
 
-    function _getTValues(uint256 tAmount) private view returns (uint256, uint256, uint256) {
-        uint256 tLiquidity = calculateLiquidityFee(tAmount);
-        uint256 tDonation = calculateDonationFee(tAmount);
-        uint256 tTransferAmount = tAmount.sub(tLiquidity).sub(tDonation);
-        return (tTransferAmount, tLiquidity, tDonation);
+    function _getValues(uint256 tAmount) private view returns (uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256, uint256) {
+        (Fees memory fees) = _getTValues(tAmount);
+        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee) = _getRValues(tAmount, fees.tFee, fees.tDev, fees.tLiquidity, fees.tCharity, _getRate());
+        return (rAmount, rTransferAmount, rFee, fees.tTransferAmount, fees.tFee, fees.tDev, fees.tLiquidity, fees.tCharity, fees.tBurn);
     }
 
-    function _getRValues(uint256 tAmount, uint256 tLiquidity, uint256 tDonation, uint256 currentRate) private pure returns (uint256, uint256) {
+    function _getTValues(uint256 tAmount) private view returns (Fees memory) {
+        Fees memory fees;
+        
+        fees.tFee = calculateTaxFee(tAmount);
+        fees.tDev = calculateDevFee(tAmount);
+        fees.tLiquidity = calculateLiquidityFee(tAmount);
+        fees.tCharity = calculateCharityFee(tAmount);
+        fees.tBurn = calculateBurnFee(tAmount);
+        fees.tTransferAmount = tAmount.sub(fees.tFee).sub(fees.tDev).sub(fees.tLiquidity).sub(fees.tCharity).sub(fees.tBurn);
+        return (fees);
+    }
+
+    function _getRValues(uint256 tAmount, uint256 tFee, uint256 tDev, uint256 tLiquidity, uint256 tCharity, uint256 currentRate) private pure returns (uint256, uint256, uint256) {
         uint256 rAmount = tAmount.mul(currentRate);
+        uint256 rFee = tFee.mul(currentRate);
+        uint256 rDev = tDev.mul(currentRate);
         uint256 rLiquidity = tLiquidity.mul(currentRate);
-        uint256 rDonation = tDonation.mul(currentRate);
-        uint256 rTransferAmount = rAmount.sub(rLiquidity).sub(rDonation);
-        return (rAmount, rTransferAmount);
+        uint256 rCharity = tCharity.mul(currentRate);
+        uint256 rTransferAmount = rAmount.sub(rFee).sub(rDev).sub(rLiquidity).sub(rCharity);
+        return (rAmount, rTransferAmount, rFee);
     }
 
     function _getRate() private view returns(uint256) {
@@ -1051,40 +1106,48 @@ contract MAMATOKEN is Context, IERC20, Ownable {
         if(_isExcluded[address(this)])
             _tOwned[address(this)] = _tOwned[address(this)].add(tLiquidity);
     }
-
-    function _takeDonation(uint256 tDonation) private {
-        uint256 currentRate =  _getRate();
-        uint256 rDonation = tDonation.mul(currentRate);
-        _rOwned[_donationWalletAddress] = _rOwned[_donationWalletAddress].add(rDonation);
-        if(_isExcluded[_donationWalletAddress])
-            _tOwned[_donationWalletAddress] = _tOwned[_donationWalletAddress].add(tDonation);
+    
+    function TransferBnbToExternalAddress(address recipient, uint256 amount) private {
+        payable(recipient).transfer(amount);
     }
 
-
-    function calculateDonationFee(uint256 _amount) private view returns (uint256) {
-        return _amount.mul(_donationFee).div(
-            10**2
-        );
+    function calculateTaxFee(uint256 _amount) private view returns (uint256) {
+        return _amount.mul(_taxFee).div(10**2);
+    }
+    
+    function calculateDevFee(uint256 _amount) private view returns (uint256) {
+        return _amount.mul(_devFee).div(10**2);
+    }
+    function calculateCharityFee(uint256 _amount) private view returns (uint256) {
+        return _amount.mul(_charityFee).div(10**2);
     }
 
     function calculateLiquidityFee(uint256 _amount) private view returns (uint256) {
-        return _amount.mul(_liquidityFee).div(
-            10**2
-        );
+        return _amount.mul(_liquidityFee).div(10**2);
+    }
+    
+    function calculateBurnFee(uint256 _amount) private view returns (uint256) {
+        return _amount.mul(_burnFee).div(10**2);
     }
 
     function removeAllFee() private {
-        if(_liquidityFee == 0) return;
+        if(_taxFee == 0 && _liquidityFee == 0) return;
 
-        _previousDonationFee = _donationFee;
+        _previousTaxFee = _taxFee;
+        _previousDevFee = _devFee;
+        _previousCharityFee = _charityFee;
         _previousLiquidityFee = _liquidityFee;
 
-        _donationFee = 0;
+        _taxFee = 0;
+        _devFee = 0;
+        _charityFee = 0;
         _liquidityFee = 0;
     }
 
     function restoreAllFee() private {
-        _donationFee = _previousDonationFee;
+        _taxFee = _previousTaxFee;
+        _devFee = _previousDevFee;
+        _charityFee = _previousCharityFee;
         _liquidityFee = _previousLiquidityFee;
     }
 
@@ -1100,8 +1163,12 @@ contract MAMATOKEN is Context, IERC20, Ownable {
         emit Approval(owner, spender, amount);
     }
     
-    function DonateBNBToExternAddress(address recipient, uint256 amount) private {
-        payable(recipient).transfer(amount);
+    function blacklistAddress(address account) public onlyOwner {
+        _isBlacklisted[account] = true;
+    }
+    
+    function whitelistAddress(address account) public onlyOwner {
+        _isBlacklisted[account] = false;
     }
 
     function _transfer(
@@ -1112,8 +1179,13 @@ contract MAMATOKEN is Context, IERC20, Ownable {
         require(from != address(0), "ERC20: transfer from the zero address");
         require(to != address(0), "ERC20: transfer to the zero address");
         require(amount > 0, "Transfer amount must be greater than zero");
+        require(_isBlacklisted[from] == false && _isBlacklisted[to] == false, "Blacklisted addresses can't do buy or sell");
+        
         if(from != owner() && to != owner())
             require(amount <= _maxTxAmount, "Transfer amount exceeds the maxTxAmount.");
+            
+        if(from != owner() && to != owner() && to != address(1) && to != uniswapV2Pair)
+            require(balanceOf(to) + amount <= _maxWalletAmount, "Exceeds maximum wallet token amount");
 
         // is the token balance of this contract address over the min number of
         // tokens that we need to initiate a swap + liquidity lock?
@@ -1137,9 +1209,6 @@ contract MAMATOKEN is Context, IERC20, Ownable {
             //add liquidity
             swapAndLiquify(contractTokenBalance);
         }
-        
-        uint256 donationTotal = calculateDonationFee(amount);
-        swapAndDonate(donationTotal);
 
         //indicates if fee should be deducted from transfer
         bool takeFee = true;
@@ -1169,27 +1238,18 @@ contract MAMATOKEN is Context, IERC20, Ownable {
 
         // how much ETH did we just swap into?
         uint256 newBalance = address(this).balance.sub(initialBalance);
+        
+        uint256 charityBNB = newBalance.div(_charityFee + _devFee + _liquidityFee).mul(_charityFee);
+        uint256 devBNB = newBalance.div(_charityFee + _devFee + _liquidityFee).mul(_devFee);
+        uint256 liquidityBNB = newBalance - charityBNB - devBNB;
+
+        TransferBnbToExternalAddress(_charityWalletAddress, newBalance.div(_charityFee + _devFee + _liquidityFee).mul(_charityFee));
+        TransferBnbToExternalAddress(_devWalletAddress, newBalance.div(_charityFee + _devFee + _liquidityFee).mul(_devFee));
 
         // add liquidity to uniswap
-        addLiquidity(otherHalf, newBalance);
+        addLiquidity(otherHalf, liquidityBNB);
 
         emit SwapAndLiquify(half, newBalance, otherHalf);
-    }
-    
-    function swapAndDonate(uint256 contactDonationBalance) private lockTheSwap {
-        // capture the contract's current ETH balance.
-        // this is so that we can capture exactly the amount of ETH that the
-        // swap creates, and not make the liquidity event include any ETH that
-        // has been manually sent to the contract
-        uint256 initialBalance = address(this).balance;
-        
-        // swap tokens for ETH
-        swapTokensForEth(contactDonationBalance);
-        
-        // how much ETH did we just swap into?
-        uint256 newBalance = address(this).balance.sub(initialBalance);
-        
-        DonateBNBToExternAddress(_donationWalletAddress, newBalance);
     }
 
     function swapTokensForEth(uint256 tokenAmount) private {
@@ -1247,32 +1307,31 @@ contract MAMATOKEN is Context, IERC20, Ownable {
     }
 
     function _transferStandard(address sender, address recipient, uint256 tAmount) private {
-        (uint256 rAmount, uint256 rTransferAmount, uint256 tTransferAmount, uint256 tLiquidity, uint256 tDonation) = _getValues(tAmount);
+        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 tDev, uint256 tLiquidity, uint256 tCharity, uint256 tBurn) = _getValues(tAmount);
         _rOwned[sender] = _rOwned[sender].sub(rAmount);
         _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);
-        _takeLiquidity(tLiquidity);
-        _takeDonation(tDonation);
+        _takeLiquidity(tLiquidity + tDev + tCharity);
+        _reflectFee(rFee, tFee, tBurn);
         emit Transfer(sender, recipient, tTransferAmount);
     }
 
     function _transferToExcluded(address sender, address recipient, uint256 tAmount) private {
-        (uint256 rAmount, uint256 rTransferAmount, uint256 tTransferAmount, uint256 tLiquidity, uint256 tDonation) = _getValues(tAmount);
+        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 tDev, uint256 tLiquidity, uint256 tCharity, uint256 tBurn) = _getValues(tAmount);
         _rOwned[sender] = _rOwned[sender].sub(rAmount);
         _tOwned[recipient] = _tOwned[recipient].add(tTransferAmount);
         _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);
-        _takeLiquidity(tLiquidity);
-        _takeDonation(tDonation);
+        _takeLiquidity(tLiquidity + tDev + tCharity);
+        _reflectFee(rFee, tFee, tBurn);
         emit Transfer(sender, recipient, tTransferAmount);
     }
 
     function _transferFromExcluded(address sender, address recipient, uint256 tAmount) private {
-        (uint256 rAmount, uint256 rTransferAmount, uint256 tTransferAmount, uint256 tLiquidity, uint256 tDonation) = _getValues(tAmount);
+        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 tDev, uint256 tLiquidity, uint256 tCharity, uint256 tBurn) = _getValues(tAmount);
         _tOwned[sender] = _tOwned[sender].sub(tAmount);
         _rOwned[sender] = _rOwned[sender].sub(rAmount);
         _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);
-        _takeLiquidity(tLiquidity);
-        _takeDonation(tDonation);
+        _takeLiquidity(tLiquidity + tDev + tCharity);
+        _reflectFee(rFee, tFee, tBurn);
         emit Transfer(sender, recipient, tTransferAmount);
     }
-
 }
